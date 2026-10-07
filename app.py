@@ -220,8 +220,10 @@ with tab_csv:
 
         if "label" in df.columns:  # optional ground truth -> quick accuracy check
             lab = df["label"]
-            truth = (lab.astype(str).str.strip().str.lower() != "normal").astype(int) \
-                if lab.dtype == object else (lab.astype(int) > 0).astype(int)
+            if pd.api.types.is_numeric_dtype(lab):
+                truth = (lab.astype(int) > 0).astype(int)
+            else:
+                truth = (lab.astype(str).str.strip().str.lower() != "normal").astype(int)
             st.info(f"Ground-truth label found. Accuracy on this file: "
                     f"**{accuracy_score(truth, pred):.1%}**")
             st.code(classification_report(truth, pred, target_names=["Normal", "Attack"],
