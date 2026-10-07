@@ -58,6 +58,136 @@ PRESETS = {
 }
 
 
+# ------------------------------------------------- feature explanations ---
+# (column name, plain-English name, what it means)
+FEATURE_GROUPS = [
+    ("🔌 Basic connection details",
+     "What the connection looks like by itself.",
+     [
+         ("duration", "Connection duration (seconds)",
+          "How long the connection lasted, in seconds."),
+         ("protocol_type", "Protocol",
+          "Network protocol used. tcp = reliable, connection-based; udp = fast, no handshake; "
+          "icmp = control messages such as ping."),
+         ("service", "Target service",
+          "The network service being contacted, e.g. http = web, ftp = file transfer, "
+          "smtp = email, private = an uncommon or unlisted port."),
+         ("flag", "Connection status",
+          "How the connection started and ended. sf = normal; s0 = connection attempt never "
+          "answered (typical of SYN-flood attacks); rej = connection rejected (typical of port "
+          "scans); rsto / rstr = connection reset; others are rarer error states."),
+         ("src_bytes", "Bytes sent by source",
+          "Data sent from the client (source) to the server. Very small or unusual values can "
+          "signal scans or floods."),
+         ("dst_bytes", "Bytes sent back by destination",
+          "Data sent from the server back to the client."),
+         ("land", "Same source and destination?",
+          "Yes if the source and destination address and port are identical. This is a known "
+          "attack trick (LAND attack); normal traffic is almost always No."),
+         ("wrong_fragment", "Malformed fragments",
+          "Number of 'wrong' (badly formed) data fragments in the connection."),
+         ("urgent", "Urgent packets",
+          "Number of packets marked 'urgent'. Rarely used in normal traffic."),
+     ]),
+    ("🔐 Login & system behaviour",
+     "What happened on the target machine during the connection.",
+     [
+         ("hot", "Sensitive-area accesses",
+          "Number of 'hot' indicators: actions such as entering system directories or "
+          "creating/executing programs."),
+         ("num_failed_logins", "Failed login attempts",
+          "How many times a login failed. Many failures suggest password guessing."),
+         ("logged_in", "Logged in successfully?",
+          "Yes if the login succeeded."),
+         ("num_compromised", "Compromised conditions",
+          "Number of signs that the system may have been tampered with (e.g. 'file not found' "
+          "errors on system files)."),
+         ("root_shell", "Admin (root) shell obtained?",
+          "Yes if the user got a root/administrator command shell."),
+         ("su_attempted", "'su root' attempted?",
+          "Whether the 'su root' command (switch to admin user) was tried."),
+         ("num_root", "Admin (root) operations",
+          "Number of operations performed with root/administrator rights."),
+         ("num_file_creations", "Files created",
+          "Number of file-creation operations during the connection."),
+         ("num_shells", "Shell prompts opened",
+          "Number of command-line shells opened."),
+         ("num_access_files", "Access-control file operations",
+          "Number of operations on sensitive access-control files (e.g. password files)."),
+         ("num_outbound_cmds", "Outbound FTP commands",
+          "Number of outbound commands in an FTP session (always 0 in this dataset)."),
+         ("is_host_login", "Privileged 'host' login?",
+          "Yes if the login belongs to the host list (special privileged accounts such as "
+          "root or admin)."),
+         ("is_guest_login", "Guest login?",
+          "Yes if the user logged in as 'guest' or 'anonymous'."),
+     ]),
+    ("⏱️ Recent traffic (last 2 seconds)",
+     "How many connections hit the same host or service in the past 2 seconds. "
+     "Floods and scans show up here.",
+     [
+         ("count", "Connections to same host",
+          "Number of connections to the same destination host in the last 2 seconds. "
+          "Very high values suggest a flood."),
+         ("srv_count", "Connections to same service",
+          "Number of connections to the same service (port) in the last 2 seconds."),
+         ("serror_rate", "Half-open connection rate (host)",
+          "Share (0 to 1) of those connections with SYN errors (started but never completed). "
+          "Close to 1 is typical of a SYN flood."),
+         ("srv_serror_rate", "Half-open connection rate (service)",
+          "Same as above, but counted over connections to the same service."),
+         ("rerror_rate", "Rejected connection rate (host)",
+          "Share (0 to 1) of connections that were rejected. Close to 1 is typical of port scans."),
+         ("srv_rerror_rate", "Rejected connection rate (service)",
+          "Same as above, but counted over connections to the same service."),
+         ("same_srv_rate", "Same-service rate",
+          "Share (0 to 1) of connections going to the same service. Normal browsing is usually high."),
+         ("diff_srv_rate", "Different-service rate",
+          "Share (0 to 1) of connections going to different services. High values suggest "
+          "a port scan."),
+         ("srv_diff_host_rate", "Same-service, different-host rate",
+          "Share (0 to 1) of same-service connections that go to different hosts."),
+     ]),
+    ("🖥️ Destination host history (last 100 connections)",
+     "Longer-term view of traffic aimed at the same destination host.",
+     [
+         ("dst_host_count", "Connections to this host",
+          "Number of connections to the same destination host among the last 100 (max 255)."),
+         ("dst_host_srv_count", "Connections to this host's service",
+          "Number of connections to the same host and service among the last 100."),
+         ("dst_host_same_srv_rate", "Same-service rate (host history)",
+          "Share (0 to 1) of connections to this host that use the same service."),
+         ("dst_host_diff_srv_rate", "Different-service rate (host history)",
+          "Share (0 to 1) of connections to this host that use different services. High = scan."),
+         ("dst_host_same_src_port_rate", "Same source-port rate",
+          "Share (0 to 1) of connections to this host coming from the same source port."),
+         ("dst_host_srv_diff_host_rate", "Same service, different sources",
+          "Share (0 to 1) of connections to this service that come from different hosts."),
+         ("dst_host_serror_rate", "Half-open rate (host history)",
+          "Share (0 to 1) of connections to this host with SYN errors."),
+         ("dst_host_srv_serror_rate", "Half-open rate (host + service history)",
+          "Share (0 to 1) of connections to this host and service with SYN errors."),
+         ("dst_host_rerror_rate", "Rejected rate (host history)",
+          "Share (0 to 1) of connections to this host that were rejected."),
+         ("dst_host_srv_rerror_rate", "Rejected rate (host + service history)",
+          "Share (0 to 1) of connections to this host and service that were rejected."),
+     ]),
+]
+
+FEATURE_INFO = {name: (friendly, meaning, group)
+                for group, _, items in FEATURE_GROUPS for name, friendly, meaning in items}
+YES_NO_FEATURES = {"land", "logged_in", "root_shell", "is_host_login", "is_guest_login"}
+
+
+def label_for(f):
+    friendly = FEATURE_INFO.get(f, (f,))[0]
+    return f"{friendly} ({f})" if friendly != f else f
+
+
+def help_for(f):
+    return FEATURE_INFO[f][1] if f in FEATURE_INFO else None
+
+
 def default_value(f):
     s = spec[f]
     if s["kind"] == "cat":
@@ -88,15 +218,20 @@ for f in FEATURES:  # initialise widget state once
 
 
 def render_input(f):
-    s, key = spec[f], f"in_{f}"
+    s, key, label, tip = spec[f], f"in_{f}", label_for(f), help_for(f)
     if s["kind"] == "cat":
-        st.selectbox(f, s["options"], key=key)
+        st.selectbox(label, s["options"], key=key, help=tip)
     elif s["kind"] == "binary":
-        st.selectbox(f, [0, 1], key=key)
+        if f in YES_NO_FEATURES:
+            st.selectbox(label, [0, 1], key=key, help=tip,
+                         format_func=lambda v: "Yes" if v == 1 else "No")
+        else:
+            st.selectbox(label, [0, 1], key=key, help=tip)
     elif s["kind"] == "rate":
-        st.number_input(f, min_value=0.0, max_value=1.0, step=0.01, format="%.2f", key=key)
+        st.number_input(label, min_value=0.0, max_value=1.0, step=0.01, format="%.2f",
+                        key=key, help=tip)
     else:
-        st.number_input(f, min_value=0, step=1, key=key)
+        st.number_input(label, min_value=0, step=1, key=key, help=tip)
 
 
 # -------------------------------------------------------------- inference ---
@@ -143,7 +278,7 @@ st.caption(f"Classifies network connections as **Normal** or **Attack** · model
 
 with st.sidebar:
     st.header("⚙️ Detection settings")
-    threshold = st.slider("Attack threshold", 0.05, 0.95, 0.50, 0.05,
+    threshold = st.slider("Attack threshold", 0.05, 0.95, 0.65, 0.05,
                           help="Lower = more sensitive (catches more attacks, more false alarms).")
     tm = meta["test_metrics"]
     st.divider()
@@ -152,7 +287,8 @@ with st.sidebar:
     st.metric("Attack recall", f"{tm['recall']:.1%}")
     st.metric("ROC-AUC", f"{tm['roc_auc']:.3f}")
 
-tab_manual, tab_csv, tab_info = st.tabs(["✍️ Manual input", "📁 Upload CSV logs", "📊 Model insights"])
+tab_manual, tab_csv, tab_info, tab_guide = st.tabs(
+    ["✍️ Manual input", "📁 Upload CSV logs", "📊 Model insights", "📖 Feature guide"])
 
 # ---- Tab 1: manual form -------------------------------------------------
 with tab_manual:
@@ -163,16 +299,24 @@ with tab_manual:
 
     with st.form("manual_form"):
         st.markdown("**Most influential features**")
+        st.caption("These matter most to the model. Hover over the ⓘ next to any field "
+                   "for a plain-English explanation.")
         top = meta["top_features"]
         cols = st.columns(3)
         for i, f in enumerate(top):
             with cols[i % 3]:
                 render_input(f)
-        with st.expander("All other features"):
-            cols = st.columns(3)
-            for i, f in enumerate([x for x in FEATURES if x not in top]):
-                with cols[i % 3]:
-                    render_input(f)
+        with st.expander("All other features (grouped)"):
+            for group, blurb, items in FEATURE_GROUPS:
+                rest = [name for name, _, _ in items if name not in top and name in spec]
+                if not rest:
+                    continue
+                st.markdown(f"**{group}**")
+                st.caption(blurb)
+                cols = st.columns(3)
+                for i, f in enumerate(rest):
+                    with cols[i % 3]:
+                        render_input(f)
         submitted = st.form_submit_button("🔍 Analyze traffic", type="primary")
 
     if submitted:
@@ -249,3 +393,28 @@ with tab_info:
     st.caption("Validation scores come from a random split of the training file; the "
                "official KDDTest+ set contains attack types unseen in training, so its "
                "scores are lower and more realistic.")
+
+# ---- Tab 4: feature guide -----------------------------------------------
+with tab_guide:
+    st.subheader("What do these features mean?")
+    st.markdown(
+        "Each network connection is described by **41 measurements**. "
+        "The model looks at all of them together to decide if the traffic is Normal or an Attack. "
+        "The *column name* is what you need in an uploaded CSV."
+    )
+
+    st.markdown("#### Quick patterns")
+    st.markdown(
+        "- **Normal web browsing:** status `sf`, logged in, steady same-service traffic, little or no errors.\n"
+        "- **DoS / SYN flood:** status `s0`, huge `count`, error rates near 1.\n"
+        "- **Port scan (Probe):** status `rej`, high different-service rate, rejected rates near 1."
+    )
+
+    for group, blurb, items in FEATURE_GROUPS:
+        st.markdown(f"#### {group}")
+        st.caption(blurb)
+        table = pd.DataFrame(
+            [{"Column name": name, "Plain name": friendly, "What it means": meaning}
+             for name, friendly, meaning in items]
+        )
+        st.dataframe(table, hide_index=True, use_container_width=True)
