@@ -4,11 +4,13 @@ Run:  streamlit run app.py
 """
 import json
 import random
+import re
 from pathlib import Path
 
 import joblib
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 from sklearn.metrics import accuracy_score, classification_report
 
 from preprocess import CATEGORICAL, COLUMNS, FEATURES, NUMERIC
@@ -370,6 +372,153 @@ def load_random_connection():
     st.session_state["loaded_from"] = name
 
 
+# --------------------------------------------------- visitor device info ---
+def parse_user_agent(ua):
+    """Rough OS / browser / device-type guess from the browser's User-Agent text."""
+    u = (ua or "").lower()
+    if not u:
+        return "Unknown", "Unknown", "Unknown"
+    if "iphone" in u:
+        os_name, device = "iOS", "Phone"
+    elif "ipad" in u:
+        os_name, device = "iPadOS", "Tablet"
+    elif "android" in u:
+        os_name = "Android"
+        device = "Phone" if "mobile" in u else "Tablet"
+    elif "windows" in u:
+        os_name, device = "Windows", "Computer"
+    elif "cros" in u:
+        os_name, device = "ChromeOS", "Computer"
+    elif "mac os" in u or "macintosh" in u:
+        os_name, device = "macOS", "Computer"
+    elif "linux" in u:
+        os_name, device = "Linux", "Computer"
+    else:
+        os_name, device = "Unknown", "Unknown"
+    if "edg/" in u or "edga/" in u or "edgios/" in u:
+        browser = "Microsoft Edge"
+    elif "opr/" in u or "opera" in u:
+        browser = "Opera"
+    elif "samsungbrowser" in u:
+        browser = "Samsung Internet"
+    elif "firefox/" in u or "fxios" in u:
+        browser = "Firefox"
+    elif "chrome/" in u or "crios" in u:
+        browser = "Chrome"
+    elif "safari/" in u:
+        browser = "Safari"
+    else:
+        browser = "Unknown"
+    return device, os_name, browser
+
+
+def get_request_info():
+    """User-Agent and public IP as seen by the server (empty if unavailable)."""
+    try:
+        headers = st.context.headers
+        ua = headers.get("User-Agent", "")
+        fwd = headers.get("X-Forwarded-For", "")
+        return ua, (fwd.split(",")[0].strip() if fwd else "")
+    except Exception:
+        return "", ""
+
+
+CLIENT_INFO_HTML = """
+<div style="font-family:system-ui,sans-serif;background:#262730;color:#eaeaea;
+            border-radius:10px;padding:14px 18px;font-size:14px;line-height:1.7">
+  <table id="t" style="width:100%;border-collapse:collapse"></table>
+</div>
+<script>
+  const c = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+  const rows = [
+    ["Screen", screen.width + " × " + screen.height + " px (pixel ratio " + (window.devicePixelRatio || 1) + ")"],
+    ["Touch screen", navigator.maxTouchPoints > 0 ? "Yes (" + navigator.maxTouchPoints + " touch points)" : "No"],
+    ["Platform", (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "Unknown"],
+    ["Language", navigator.language || "Unknown"],
+    ["Time zone", Intl.DateTimeFormat().resolvedOptions().timeZone || "Unknown"],
+    ["Online", navigator.onLine ? "Yes" : "No"],
+    ["Connection quality", c ? ((c.effectiveType || "?").toUpperCase() + " · about " + c.downlink + " Mbps · latency " + c.rtt + " ms" + (c.saveData ? " · data saver ON" : "")) : "Not reported by this browser"],
+    ["CPU cores", navigator.hardwareConcurrency || "Not reported"],
+    ["Device memory", navigator.deviceMemory ? "about " + navigator.deviceMemory + " GB" : "Not reported"],
+    ["Cookies enabled", navigator.cookieEnabled ? "Yes" : "No"]
+  ];
+  document.getElementById("t").innerHTML = rows.map(function (r) {
+    return "<tr><td style='padding:3px 12px 3px 0;color:#9aa0aa;white-space:nowrap;vertical-align:top'>" + r[0] +
+           "</td><td style='padding:3px 0'>" + r[1] + "</td></tr>";
+  }).join("");
+</script>
+"""
+
+
+LIVE_HTML = """
+<style>
+ body{margin:0}
+ .wrap{font-family:system-ui,sans-serif;background:#0e1117;color:#eaeaea;padding:16px;border-radius:12px}
+ .sub{color:#9aa0aa;margin-bottom:12px}
+ .err{display:none;background:#3a1d1d;border-radius:8px;padding:12px 14px;margin-bottom:12px;line-height:1.6}
+ .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-bottom:16px}
+ .card{background:#1b1f2a;border-radius:10px;padding:12px 14px}
+ .k{color:#9aa0aa;font-size:12px}.v{font-size:20px;font-weight:600;margin-top:4px;word-break:break-word}
+ .badge{display:inline-block;padding:3px 14px;border-radius:20px;font-weight:700;color:#000}
+ .green{background:#3ddc84}.yellow{background:#ffd54a}.orange{background:#ff9f43}
+ .red{background:#ff5252}.gray{background:#8b93a1}
+ table{width:100%;border-collapse:collapse;font-size:12.5px;margin-bottom:18px}
+ th,td{text-align:left;padding:5px 8px;border-bottom:1px solid #2a2f3a}th{color:#9aa0aa;font-weight:500}
+ h3{margin:6px 0 8px;font-size:16px}
+</style>
+<div class="wrap">
+ <div class="sub" id="sub">Connecting to the agent on this device...</div>
+ <div class="err" id="err"></div>
+ <div class="grid">
+  <div class="card"><div class="k">Device name</div><div class="v" id="dev">-</div></div>
+  <div class="card"><div class="k">System</div><div class="v" id="os">-</div></div>
+  <div class="card"><div class="k">Local IP</div><div class="v" id="ip">-</div></div>
+  <div class="card"><div class="k">Threat level (last minute)</div><div class="v"><span class="badge gray" id="lvl">-</span></div></div>
+  <div class="card"><div class="k">Connections flagged</div><div class="v" id="fl">-</div></div>
+  <div class="card"><div class="k">Highest attack probability</div><div class="v" id="top">-</div></div>
+  <div class="card"><div class="k">Packets captured</div><div class="v" id="pk">-</div></div>
+ </div>
+ <h3>Flagged connections</h3><table id="al"></table>
+ <h3>Latest connections</h3><table id="rc"></table>
+</div>
+<script>
+ var URL = "http://127.0.0.1:__PORT__/api/status?code=__CODE__";
+ function fill(id, rows) {
+   var t = document.getElementById(id);
+   t.innerHTML = "<tr><th>Time</th><th>Connection</th><th>Service</th><th>Flag</th><th>Attack prob.</th></tr>";
+   rows.forEach(function (r) {
+     var tr = t.insertRow();
+     [r.time, r.flow, r.service, r.flag, (r.probability * 100).toFixed(1) + "%"].forEach(function (x) {
+       tr.insertCell().textContent = x;
+     });
+   });
+   if (!rows.length) { var tr = t.insertRow(); var td = tr.insertCell(); td.colSpan = 5; td.textContent = "None yet"; }
+ }
+ function ok(s) {
+   document.getElementById("err").style.display = "none";
+   document.getElementById("dev").textContent = s.device.name;
+   document.getElementById("os").textContent = s.device.system;
+   document.getElementById("ip").textContent = s.device.ip;
+   var l = document.getElementById("lvl"); l.textContent = s.level; l.className = "badge " + s.color;
+   document.getElementById("fl").textContent = s.window_flagged + " of " + s.window_flows + " (" + (s.share * 100).toFixed(0) + "%)";
+   document.getElementById("top").textContent = (s.top_probability * 100).toFixed(1) + "%";
+   document.getElementById("pk").textContent = s.packets;
+   document.getElementById("sub").textContent = "Live from your device. Alert threshold " + s.threshold + " | " + s.flows_scored + " connections scored | agent running " + s.uptime_s + " s";
+   fill("al", s.alerts); fill("rc", s.recent);
+ }
+ function fail() {
+   var e = document.getElementById("err"); e.style.display = "block";
+   e.textContent = "Could not reach the agent on this device. Check that: (1) python agent.py is running, (2) the pairing code and port match what the agent shows, (3) you are using Chrome, Edge or Firefox, and you clicked Allow if the browser asked about access to apps or services on this device. Wrong codes are blocked for a minute after 20 tries.";
+   document.getElementById("sub").textContent = "Not connected";
+ }
+ function tick() {
+   fetch(URL).then(function (r) { if (!r.ok) throw new Error("http"); return r.json(); }).then(ok).catch(fail);
+ }
+ tick(); setInterval(tick, 2000);
+</script>
+"""
+
+
 # ------------------------------------------------------------------- UI ---
 st.title("🛡️ Network Intrusion Detection System")
 st.caption(f"Classifies network connections as **Normal** or **Attack** · model: "
@@ -386,9 +535,9 @@ with st.sidebar:
     st.metric("Attack recall", f"{tm['recall']:.1%}")
     st.metric("ROC-AUC", f"{tm['roc_auc']:.3f}")
 
-tab_manual, tab_csv, tab_info, tab_net, tab_guide = st.tabs(
+tab_manual, tab_csv, tab_info, tab_net, tab_live, tab_device, tab_guide = st.tabs(
     ["✍️ Manual input", "📁 Upload CSV logs", "📊 Model insights",
-     "🌐 Network comparison", "📖 Feature guide"])
+     "🌐 Network comparison", "📡 Live monitor", "📱 My device", "📖 Feature guide"])
 
 # ---- Tab 1: manual form -------------------------------------------------
 with tab_manual:
@@ -599,7 +748,79 @@ with tab_net:
                 st.dataframe(worst.sort_values("attack_probability", ascending=False).head(5),
                              hide_index=True, use_container_width=True)
 
-# ---- Tab 5: feature guide -----------------------------------------------
+# ---- Tab 5: live monitor (real traffic from the agent on the visitor's device) ----
+with tab_live:
+    st.subheader("📡 Live monitor of your own device")
+    st.markdown(
+        "This page shows **real, live results from the agent running on your own device**: "
+        "your real device name and the threat level of your real network traffic. "
+        "A website cannot see this by itself, so the agent does the capturing and this page only "
+        "displays it. The data goes from the agent straight to **your browser** and is never "
+        "sent to our server."
+    )
+    st.markdown(
+        "**How to use it**\n"
+        "1. Download `agent.py` and `requirements-agent.txt` from the project's GitHub repo "
+        "(or from the presenter).\n"
+        "2. Install **Npcap** (npcap.com, tick *WinPcap API-compatible mode*) and run "
+        "`pip install -r requirements-agent.txt`.\n"
+        "3. Open PowerShell **as Administrator** in the project folder and run `python agent.py`.\n"
+        "4. Enter the **6-character pairing code** that the agent prints below. "
+        "Use Chrome, Edge or Firefox, and click **Allow** if the browser asks about access to "
+        "apps or services on your device."
+    )
+    c_code, c_port = st.columns([2, 1])
+    code_in = c_code.text_input("Pairing code (shown by the agent)", max_chars=6,
+                                key="live_code", placeholder="e.g. K7M4QX")
+    port_in = c_port.number_input("Agent port", min_value=1024, max_value=65535,
+                                  value=8765, step=1, key="live_port")
+    code_clean = re.sub(r"[^A-Z0-9]", "", code_in.upper())
+    if len(code_clean) == 6:
+        components.html(
+            LIVE_HTML.replace("__PORT__", str(int(port_in))).replace("__CODE__", code_clean),
+            height=1050, scrolling=True)
+    else:
+        st.info("Enter the 6-character pairing code from your agent window to start the live view.")
+    st.caption("Limits: the model was trained on 1999-era NSL-KDD data, so modern traffic can "
+               "cause false alarms. The login/system features cannot be seen from network traffic "
+               "and are set to 0. Treat this as a research prototype.")
+
+# ---- Tab 6: visitor device ----------------------------------------------
+with tab_device:
+    st.subheader("📱 Your device and connection")
+    st.caption("This is what any website can see about the device you are using right now. "
+               "It is shown only to you and nothing is stored or sent anywhere.")
+
+    ua, ip = get_request_info()
+    device, os_name, browser = parse_user_agent(ua)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Device type", device)
+    c2.metric("Operating system", os_name)
+    c3.metric("Browser", browser)
+    if ip:
+        st.markdown(f"**Public IP address seen by the server:** `{ip}`")
+        st.caption("This is the address of your network (Wi-Fi router or mobile carrier), "
+                   "so everyone on the same network shows the same one.")
+    components.html(CLIENT_INFO_HTML, height=370)
+
+    st.markdown("#### What a web page cannot do")
+    st.info(
+        "A browser deliberately hides your **device name** (for example \"Rahul's phone\"), "
+        "your other apps, and your network traffic from every website. For that reason, this "
+        "page **cannot detect threats on your device** or tell you whether your own network "
+        "is under attack. Any site that claims to do that from a link alone is guessing."
+    )
+    st.markdown(
+        "**How real per-device threat detection works**\n"
+        "1. A small **agent program** is installed on the device (or router) and records its "
+        "connections.\n"
+        "2. The agent turns them into features such as the 41 used here.\n"
+        "3. A model like ours scores them, and the result is shown on a dashboard.\n\n"
+        "To check a real network with this project today, export its connection log and use the "
+        "**📁 Upload CSV logs** or **🌐 Network comparison** tabs."
+    )
+
+# ---- Tab 7: feature guide -----------------------------------------------
 with tab_guide:
     st.subheader("What do these features mean?")
     st.markdown(
