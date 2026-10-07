@@ -3,6 +3,7 @@
 Run:  streamlit run app.py
 """
 import json
+import random
 from pathlib import Path
 
 import joblib
@@ -211,6 +212,9 @@ def apply_preset(name):
     values.update({f: cast(f, v) for f, v in PRESETS[name].items()})
     for f, v in values.items():
         st.session_state[f"in_{f}"] = v
+    st.session_state["sel_network"] = NET_NONE
+    st.session_state["loaded_truth"] = None
+    st.session_state["loaded_from"] = None
 
 
 for f in FEATURES:  # initialise widget state once
@@ -240,12 +244,73 @@ def run_model(df, threshold):
     return proba, (proba >= threshold).astype(int)
 
 
+def threat_level(p, threshold):
+    """Turn one attack probability into a human-friendly threat level."""
+    if p >= 0.90:
+        return "🔴 Critical"
+    if p >= threshold:
+        return "🟠 High"
+    if p >= 0.30:
+        return "🟡 Medium (suspicious, below alert threshold)"
+    return "🟢 Low"
+
+
 def show_verdict(p, threshold):
     if p >= threshold:
         st.error(f"🚨 **ATTACK DETECTED**: attack probability {p:.1%}")
     else:
         st.success(f"✅ **NORMAL TRAFFIC**: attack probability {p:.1%}")
     st.progress(float(min(max(p, 0.0), 1.0)))
+    st.caption(f"Threat level for this connection: **{threat_level(p, threshold)}**")
+
+
+# ---------------------------------------------- network-level comparison ---
+DEMO_NETWORKS = {  # name -> share of attack traffic mixed into the demo log
+    "🏠 Home Wi-Fi": 0.03,
+    "🏢 Office network": 0.12,
+    "🎓 College campus": 0.30,
+    "☕ Public Wi-Fi": 0.50,
+    "🌐 Web server under DoS attack": 0.85,
+}
+
+
+def network_risk(share):
+    """Risk level of a whole network from the share of flagged connections."""
+    if share >= 0.60:
+        return "🔴 Critical"
+    if share >= 0.30:
+        return "🟠 High"
+    if share >= 0.10:
+        return "🟡 Medium"
+    return "🟢 Low"
+
+
+@st.cache_data
+def build_demo_networks(path_str, n=150):
+    """Build demo network logs by re-sampling real NSL-KDD rows with different attack mixes."""
+    raw = pd.read_csv(path_str)
+    is_att = raw["label"].astype(str).str.strip().str.lower() != "normal"
+    attacks, normals = raw[is_att], raw[~is_att]
+    nets = {}
+    for i, (name, share) in enumerate(DEMO_NETWORKS.items()):
+        n_att = int(round(n * share))
+        parts = []
+        if n_att and len(attacks):
+            parts.append(attacks.sample(n_att, replace=n_att > len(attacks), random_state=i))
+        if n - n_att and len(normals):
+            parts.append(normals.sample(n - n_att, replace=(n - n_att) > len(normals),
+                                        random_state=100 + i))
+        if parts:
+            nets[name] = pd.concat(parts).sample(frac=1, random_state=7).reset_index(drop=True)
+    return nets
+
+
+def score_network(df, threshold):
+    proba, pred = run_model(df, threshold)
+    n = len(df)
+    return {"proba": proba, "pred": pred, "n": n, "n_att": int(pred.sum()),
+            "share": float(pred.mean()) if n else 0.0,
+            "avg": float(proba.mean()) if n else 0.0}
 
 
 def load_uploaded(file):
@@ -271,6 +336,40 @@ def clean_uploaded(df):
     return df
 
 
+NET_NONE = "— Custom (no network) —"
+
+
+def safe_value(f, v):
+    """Convert a value from a data row into something the form widget accepts."""
+    s = spec[f]
+    if pd.isna(v):
+        return default_value(f)
+    if s["kind"] == "cat":
+        v = str(v).strip().lower()
+        return v if v in s["options"] else s["default"]
+    if s["kind"] == "binary":
+        return 1 if float(v) > 0 else 0
+    if s["kind"] == "rate":
+        return float(min(max(float(v), 0.0), 1.0))
+    return int(max(float(v), 0))
+
+
+def load_random_connection():
+    """Fill the manual form with a real connection from the selected network."""
+    name = st.session_state.get("sel_network", NET_NONE)
+    if name == NET_NONE or not SAMPLE_PATH.exists():
+        return
+    nets = build_demo_networks(str(SAMPLE_PATH))
+    if name not in nets:
+        return
+    row = nets[name].iloc[random.randrange(len(nets[name]))]
+    for f in FEATURES:
+        st.session_state[f"in_{f}"] = safe_value(f, row[f])
+    lab = str(row.get("label", "")).strip().lower()
+    st.session_state["loaded_truth"] = lab or None
+    st.session_state["loaded_from"] = name
+
+
 # ------------------------------------------------------------------- UI ---
 st.title("🛡️ Network Intrusion Detection System")
 st.caption(f"Classifies network connections as **Normal** or **Attack** · model: "
@@ -287,12 +386,34 @@ with st.sidebar:
     st.metric("Attack recall", f"{tm['recall']:.1%}")
     st.metric("ROC-AUC", f"{tm['roc_auc']:.3f}")
 
-tab_manual, tab_csv, tab_info, tab_guide = st.tabs(
-    ["✍️ Manual input", "📁 Upload CSV logs", "📊 Model insights", "📖 Feature guide"])
+tab_manual, tab_csv, tab_info, tab_net, tab_guide = st.tabs(
+    ["✍️ Manual input", "📁 Upload CSV logs", "📊 Model insights",
+     "🌐 Network comparison", "📖 Feature guide"])
 
 # ---- Tab 1: manual form -------------------------------------------------
 with tab_manual:
-    st.markdown("Load a demo profile, tweak features if you like, then analyze.")
+    st.markdown("Pick a **network** to load a real connection from it (the values change for "
+                "every network), or load a demo profile. Tweak the values if you like, "
+                "then analyze.")
+    if SAMPLE_PATH.exists():
+        c_sel, c_btn = st.columns([3, 1])
+        with c_sel:
+            st.selectbox(
+                "🌐 Network", [NET_NONE] + list(DEMO_NETWORKS), key="sel_network",
+                on_change=load_random_connection,
+                help="Each network has a different mix of normal and attack traffic. "
+                     "Choosing one fills the form with a real connection from that network.")
+        with c_btn:
+            st.markdown("&nbsp;")
+            st.button("🎲 Another connection", on_click=load_random_connection,
+                      use_container_width=True,
+                      disabled=st.session_state.get("sel_network", NET_NONE) == NET_NONE)
+        sel = st.session_state.get("sel_network", NET_NONE)
+        if sel != NET_NONE:
+            share = DEMO_NETWORKS[sel]
+            st.caption(f"{sel}: about {share:.0%} of its traffic is attack-like "
+                       f"({network_risk(share)} network). Each click loads a different "
+                       f"real connection from it.")
     cols = st.columns(len(PRESETS))
     for c, name in zip(cols, PRESETS):
         c.button(name, on_click=apply_preset, args=(name,), use_container_width=True)
@@ -323,6 +444,12 @@ with tab_manual:
         row = pd.DataFrame([{f: st.session_state[f"in_{f}"] for f in FEATURES}])
         proba, _ = run_model(row, threshold)
         show_verdict(float(proba[0]), threshold)
+        truth = st.session_state.get("loaded_truth")
+        if truth:
+            actual = "Normal" if truth == "normal" else f"Attack ({truth})"
+            st.info(f"The connection originally loaded from "
+                    f"**{st.session_state.get('loaded_from')}** is labelled **{actual}** in the "
+                    f"dataset. If you edited the values, the result above reflects your edits.")
 
 # ---- Tab 2: CSV upload --------------------------------------------------
 with tab_csv:
@@ -394,7 +521,85 @@ with tab_info:
                "official KDDTest+ set contains attack types unseen in training, so its "
                "scores are lower and more realistic.")
 
-# ---- Tab 4: feature guide -----------------------------------------------
+# ---- Tab 4: network comparison -----------------------------------------
+with tab_net:
+    st.subheader("Compare the threat level of different networks")
+    st.markdown(
+        "A single connection gets its own attack probability. A **network** is a collection of "
+        "connections, so its threat level comes from **how much of its traffic looks like an "
+        "attack**. Different networks therefore get different scores."
+    )
+    st.caption("Network threat level, by share of flagged connections: "
+               "🟢 Low < 10% · 🟡 Medium 10–30% · 🟠 High 30–60% · 🔴 Critical ≥ 60%. "
+               "Uses the attack threshold from the sidebar.")
+
+    source = st.radio("Which networks do you want to compare?",
+                      ["Demo networks", "Upload my own logs"], horizontal=True)
+    networks = {}
+    if source == "Demo networks":
+        st.caption("Demo networks are made by re-sampling real NSL-KDD records with different "
+                   "attack mixes, to show how threat levels differ. They are simulations, not "
+                   "captures from real places.")
+        if SAMPLE_PATH.exists():
+            try:
+                networks = build_demo_networks(str(SAMPLE_PATH))
+            except Exception as exc:
+                st.error(f"Could not build demo networks: {exc}")
+        else:
+            st.info("Sample data not found. Run `python train.py` to create it, "
+                    "or upload your own logs.")
+    else:
+        st.caption("Upload one CSV per network. The file name is used as the network name "
+                   "(e.g. `hostel_wifi.csv`).")
+        files = st.file_uploader("Network logs (one CSV per network)", type=["csv", "txt"],
+                                 accept_multiple_files=True, key="network_files")
+        for f in files or []:
+            try:
+                networks[Path(f.name).stem] = load_uploaded(f)
+            except Exception as exc:
+                st.error(f"{f.name}: {exc}")
+
+    if networks:
+        results, rows = {}, []
+        for name, raw_df in networks.items():
+            df_n = clean_uploaded(raw_df)
+            r = score_network(df_n, threshold)
+            results[name] = (df_n, r)
+            rows.append({"Network": name, "Connections": r["n"],
+                         "Attacks flagged": r["n_att"],
+                         "Attack share (%)": round(r["share"] * 100, 1),
+                         "Avg attack probability (%)": round(r["avg"] * 100, 1),
+                         "Threat level": network_risk(r["share"])})
+        summary = pd.DataFrame(rows).sort_values("Attack share (%)", ascending=False)
+
+        top = summary.iloc[0]
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Networks compared", len(summary))
+        c2.metric("Highest threat", top["Network"])
+        c3.metric("Its attack share", f"{top['Attack share (%)']:.1f}%")
+
+        st.dataframe(
+            summary, hide_index=True, use_container_width=True,
+            column_config={"Attack share (%)": st.column_config.ProgressColumn(
+                "Attack share (%)", min_value=0, max_value=100, format="%.1f%%")})
+        st.bar_chart(summary.set_index("Network")["Attack share (%)"])
+        st.download_button("⬇️ Download comparison report (CSV)",
+                           summary.to_csv(index=False).encode(),
+                           "network_threat_comparison.csv", "text/csv")
+
+        st.markdown("#### Most suspicious connections per network")
+        show_cols = [c for c in ["protocol_type", "service", "flag", "src_bytes",
+                                 "dst_bytes", "count"] if c in FEATURES]
+        for name in summary["Network"]:
+            df_n, r = results[name]
+            with st.expander(f"{name}: {network_risk(r['share'])} "
+                             f"({r['share']:.1%} flagged)"):
+                worst = df_n[show_cols].copy()
+                worst["attack_probability"] = r["proba"].round(3)
+                st.dataframe(worst.sort_values("attack_probability", ascending=False).head(5),
+                             hide_index=True, use_container_width=True)
+
+# ---- Tab 5: feature guide -----------------------------------------------
 with tab_guide:
     st.subheader("What do these features mean?")
     st.markdown(
